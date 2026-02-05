@@ -10,9 +10,11 @@ use crate::{
         refund_user, set_authorized_subnetwork_list,
     },
     history::EventType,
-    CreateRentalAgreementPayload, EventPage, ExecuteProposalError, PriceCalculationData,
-    RentalAgreement, RentalAgreementStatus, RentalConditionId, RentalConditions, RentalRequest,
-    SubnetRentalProposalPayload, TopUpSummary, BILLION, TRILLION,
+    CreateRentalAgreementPayload, EventPage, ExecuteProposalError, OperationType,
+    PriceCalculationData, RentalAgreement, RentalAgreementStatus, RentalConditionId,
+    RentalConditions, RentalRequest, SubnetRentalProposalPayload, TopUpSummary,
+    UpdateSubnetAdminsError, UpdateSubnetAdminsPayload, UpdateSubnetAdminsResult, BILLION,
+    TRILLION,
 };
 use candid::Principal;
 use ic_cdk::{
@@ -824,6 +826,63 @@ pub async fn top_up_subnet(subnet_id: Principal) -> Result<TopUpSummary, String>
     })
 }
 
+/// Callable by any principal that is renting a subnet to update the list of subnet admins for this subnet.
+#[update]
+pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> UpdateSubnetAdminsResult {
+    let subnet_id = payload.subnet_id;
+    // Make sure that there are no other concurrent operations on the subnet
+    // that could change its agreement status (e.g. if the subnet is not rented
+    // anymore, there should not be an in-flight request to change subnet admins).
+
+    // Additionally, this protects against multiple in-flight requests to update
+    // subnet admins -- it would probably be ok as the update happens in an
+    // idempotent way at the moment on the registry's side but there is no strong
+    // guarantee that this won't change in the future.
+    let Ok(_guard_res) = CallerGuard::new(subnet_id, "agreement") else {
+        println!(
+            "Busy processing another update_subnet_admins request for subnet {}",
+            payload.subnet_id
+        );
+        return UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::ConcurrentChange(
+            candid::Reserved,
+        )));
+    };
+
+    // Caller must be renting the subnet they are trying to set admins for.
+    if let Err(e) = verify_caller_is_renting_subnet(subnet_id) {
+        return UpdateSubnetAdminsResult::Err(Some(e));
+    }
+
+    let provided_principals_count = match &payload.operation_type {
+        None => {
+            return UpdateSubnetAdminsResult::Err(Some(
+                UpdateSubnetAdminsError::UnknownOperationType(candid::Reserved),
+            ));
+        }
+        Some(OperationType::Add(provided_principals))
+        | Some(OperationType::Remove(provided_principals)) => {
+            let provided_principals_count = provided_principals.get().len() as u64;
+            if provided_principals_count == 0 {
+                return UpdateSubnetAdminsResult::Err(Some(
+                    UpdateSubnetAdminsError::PrincipalListEmpty(candid::Reserved),
+                ));
+            }
+            provided_principals_count
+        }
+        Some(OperationType::Clear(_)) => 0,
+    };
+
+    let res = crate::external_calls::update_subnet_admins(payload.into()).await;
+    match res {
+        Ok(()) => UpdateSubnetAdminsResult::Ok(candid::Reserved),
+        Err(e) => UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::from((
+            e,
+            subnet_id,
+            provided_principals_count,
+        )))),
+    }
+}
+
 // ============================================================================
 // Misc
 
@@ -831,6 +890,22 @@ fn verify_caller_is_governance() -> Result<(), ExecuteProposalError> {
     if msg_caller() != MAINNET_GOVERNANCE_CANISTER_ID {
         println!("Caller is not the governance canister");
         return Err(ExecuteProposalError::UnauthorizedCaller);
+    }
+    Ok(())
+}
+
+fn verify_caller_is_renting_subnet(subnet_id: Principal) -> Result<(), UpdateSubnetAdminsError> {
+    let caller = msg_caller();
+    let is_renting = iter_rental_agreements()
+        .iter()
+        .any(|(_, v)| v.user == caller && v.subnet_id == subnet_id);
+    if !is_renting {
+        println!(
+            "Unauthorized caller {caller} attempted to update subnet admins for subnet {subnet_id}",
+        );
+        return Err(UpdateSubnetAdminsError::CallerNotRentingSubnet(
+            candid::Reserved,
+        ));
     }
     Ok(())
 }

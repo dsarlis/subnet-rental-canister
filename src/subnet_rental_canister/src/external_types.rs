@@ -1,4 +1,7 @@
-use candid::{CandidType, Deserialize, Principal};
+use candid::{
+    types::bounded_vec::{BoundedVec, UNBOUNDED},
+    CandidType, Deserialize, Principal,
+};
 use ic_ledger_types::Tokens;
 use std::collections::{HashMap, HashSet};
 
@@ -84,4 +87,34 @@ pub struct NnsLedgerCanisterInitPayload {
 #[derive(CandidType, Debug)]
 pub struct FeatureFlags {
     pub icrc2: bool,
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub enum OperationType {
+    Add(BoundedVec<{ super::MAX_ALLOWED_SUBNET_ADMINS }, UNBOUNDED, UNBOUNDED, Principal>),
+    Remove(BoundedVec<{ super::MAX_ALLOWED_SUBNET_ADMINS }, UNBOUNDED, UNBOUNDED, Principal>),
+    Clear(candid::Reserved),
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub struct UpdateSubnetAdminsPayload {
+    pub subnet_id: Principal,
+    pub operation_type: Option<OperationType>,
+}
+
+impl From<crate::UpdateSubnetAdminsPayload> for UpdateSubnetAdminsPayload {
+    fn from(payload: crate::UpdateSubnetAdminsPayload) -> Self {
+        let operation_type = match payload.operation_type {
+            Some(crate::OperationType::Add(principal_list)) => OperationType::Add(principal_list),
+            Some(crate::OperationType::Remove(principal_list)) => {
+                OperationType::Remove(principal_list)
+            }
+            Some(crate::OperationType::Clear(_)) => OperationType::Clear(candid::Reserved),
+            None => OperationType::Clear(candid::Reserved),
+        };
+        UpdateSubnetAdminsPayload {
+            subnet_id: payload.subnet_id,
+            operation_type: Some(operation_type),
+        }
+    }
 }

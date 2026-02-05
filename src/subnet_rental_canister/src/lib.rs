@@ -1,4 +1,7 @@
-use candid::{CandidType, Decode, Deserialize, Encode, Principal};
+use candid::{
+    types::bounded_vec::{BoundedVec, UNBOUNDED},
+    CandidType, Decode, Deserialize, Encode, Principal,
+};
 use history::Event;
 use ic_ledger_types::{Memo, Tokens};
 use ic_stable_structures::{storable::Bound, Storable};
@@ -13,6 +16,7 @@ mod history;
 pub const BILLION: u64 = 1_000_000_000;
 pub const TRILLION: u128 = 1_000_000_000_000;
 pub const E8S: u64 = 100_000_000;
+const MAX_ALLOWED_SUBNET_ADMINS: usize = 10;
 const MEMO_TOP_UP_CANISTER: Memo = Memo(0x50555054); // == 'TPUP'
 
 // ============================================================================
@@ -203,4 +207,37 @@ pub struct EventPage {
     /// `get_history_page(principal, Some(continuation))` or
     /// `get_rental_conditions_history_page(Some(continuation))
     pub continuation: u64,
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub enum OperationType {
+    Add(BoundedVec<MAX_ALLOWED_SUBNET_ADMINS, UNBOUNDED, UNBOUNDED, Principal>),
+    Remove(BoundedVec<MAX_ALLOWED_SUBNET_ADMINS, UNBOUNDED, UNBOUNDED, Principal>),
+    Clear(candid::Reserved),
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub struct UpdateSubnetAdminsPayload {
+    pub subnet_id: Principal,
+    pub operation_type: Option<OperationType>,
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub enum UpdateSubnetAdminsError {
+    TooManySubnetAdmins {
+        provided: u64,
+        existing: u64,
+        max_allowed: u64,
+    },
+    CallerNotRentingSubnet(candid::Reserved),
+    PrincipalListEmpty(candid::Reserved),
+    ConcurrentChange(candid::Reserved),
+    UnknownOperationType(candid::Reserved),
+    UnknownError(String),
+}
+
+#[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
+pub enum UpdateSubnetAdminsResult {
+    Ok(candid::Reserved),
+    Err(Option<UpdateSubnetAdminsError>),
 }

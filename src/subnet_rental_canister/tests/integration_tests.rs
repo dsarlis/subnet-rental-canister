@@ -1291,12 +1291,12 @@ fn check_subnet_status(pic: &PocketIc) -> RentalAgreementStatus {
 
 fn rent_subnet_helper(pic: &PocketIc, subnet_id: Principal, renting_principal: Principal) {
     // set an exchange rate for the current time on the XRC mock
-    set_xrc_exchange_rate_last_midnight(&pic, 3_593_382_591); // 1 ICP = 3.593382591 XDR
-    let final_subnet_price = get_todays_price(&pic);
+    set_xrc_exchange_rate_last_midnight(pic, 3_593_382_591); // 1 ICP = 3.593382591 XDR
+    let final_subnet_price = get_todays_price(pic);
 
     // transfer the initial payment
     let paid_to_src = final_subnet_price + Tokens::from_e8s(100 * E8S); // 100 ICP extra
-    pay_src(&pic, renting_principal, paid_to_src);
+    pay_src(pic, renting_principal, paid_to_src);
 
     // create rental request proposal
     let now = pic.get_time().as_nanos_since_unix_epoch() / NANOS_PER_SECOND;
@@ -1315,7 +1315,7 @@ fn rent_subnet_helper(pic: &PocketIc, subnet_id: Principal, renting_principal: P
 
     // Submit the request to rent a subnet and execute it.
     update::<()>(
-        &pic,
+        pic,
         SRC_ID,
         Some(MAINNET_GOVERNANCE_CANISTER_ID),
         "execute_rental_request_proposal",
@@ -1329,7 +1329,7 @@ fn rent_subnet_helper(pic: &PocketIc, subnet_id: Principal, renting_principal: P
         proposal_id: 137322,
     };
     update::<()>(
-        &pic,
+        pic,
         SRC_ID,
         Some(MAINNET_GOVERNANCE_CANISTER_ID),
         "execute_create_rental_agreement",

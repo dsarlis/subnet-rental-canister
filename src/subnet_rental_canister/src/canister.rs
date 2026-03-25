@@ -830,6 +830,12 @@ pub async fn top_up_subnet(subnet_id: Principal) -> Result<TopUpSummary, String>
 #[update]
 pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> UpdateSubnetAdminsResult {
     let subnet_id = payload.subnet_id;
+
+    // Caller must be renting the subnet they are trying to set admins for.
+    if let Err(e) = verify_caller_is_renting_subnet(subnet_id) {
+        return UpdateSubnetAdminsResult::Err(Some(e));
+    }
+
     // Make sure that there are no other concurrent operations on the subnet
     // that could change its agreement status (e.g. if the subnet is not rented
     // anymore, there should not be an in-flight request to change subnet admins).
@@ -847,11 +853,6 @@ pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> UpdateS
             candid::Reserved,
         )));
     };
-
-    // Caller must be renting the subnet they are trying to set admins for.
-    if let Err(e) = verify_caller_is_renting_subnet(subnet_id) {
-        return UpdateSubnetAdminsResult::Err(Some(e));
-    }
 
     let provided_principals_count = match &payload.operation_type {
         None => {

@@ -224,38 +224,11 @@ pub struct UpdateSubnetAdminsPayload {
 
 #[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]
 pub enum UpdateSubnetAdminsError {
-    TooManySubnetAdmins { provided: u64, max_allowed: u64 },
     CallerNotRentingSubnet(candid::Reserved),
     PrincipalListEmpty(candid::Reserved),
     ConcurrentChange(candid::Reserved),
     UnknownOperationType(candid::Reserved),
-    RateLimited(Principal),
-    UnknownError(String),
-}
-
-impl From<(String, Principal, u64)> for UpdateSubnetAdminsError {
-    fn from(
-        (error, subnet_id, provided_principals_count): (String, Principal, u64),
-    ) -> UpdateSubnetAdminsError {
-        // The error messages are taken from the Registry's [Display implementation]
-        // (https://github.com/dfinity/ic/blob/ebfc635d0956899f3d821ab25d3ed9463c74d055/rs/registry/canister/src/mutations/do_update_subnet_admins.rs#L53-L82)
-        // While this approach is not great, it's the best we can do given that
-        // the Registry canister panics and does not return structured errors.
-        // The following will have to be updated whenever a change happens
-        // on the Registry's side.
-        if error.contains("Too many subnet admins") {
-            UpdateSubnetAdminsError::TooManySubnetAdmins {
-                provided: provided_principals_count,
-                max_allowed: MAX_ALLOWED_SUBNET_ADMINS as u64,
-            }
-        } else if error.contains("The operation type provided is unknown") {
-            UpdateSubnetAdminsError::UnknownOperationType(candid::Reserved)
-        } else if error.contains("rate limited due to too many subnet admin updates") {
-            UpdateSubnetAdminsError::RateLimited(subnet_id)
-        } else {
-            UpdateSubnetAdminsError::UnknownError(format!("{error:?}"))
-        }
-    }
+    RegistryError(String),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug, CandidType, Deserialize)]

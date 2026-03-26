@@ -854,7 +854,7 @@ pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> UpdateS
         )));
     };
 
-    let provided_principals_count = match &payload.operation_type {
+    match &payload.operation_type {
         None => {
             return UpdateSubnetAdminsResult::Err(Some(
                 UpdateSubnetAdminsError::UnknownOperationType(candid::Reserved),
@@ -862,25 +862,19 @@ pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> UpdateS
         }
         Some(OperationType::Add(provided_principals))
         | Some(OperationType::Remove(provided_principals)) => {
-            let provided_principals_count = provided_principals.get().len() as u64;
-            if provided_principals_count == 0 {
+            if provided_principals.get().is_empty() {
                 return UpdateSubnetAdminsResult::Err(Some(
                     UpdateSubnetAdminsError::PrincipalListEmpty(candid::Reserved),
                 ));
             }
-            provided_principals_count
         }
-        Some(OperationType::Clear(_)) => 0,
+        Some(OperationType::Clear(_)) => {}
     };
 
     let res = crate::external_calls::update_subnet_admins(payload.into()).await;
     match res {
         Ok(()) => UpdateSubnetAdminsResult::Ok(candid::Reserved),
-        Err(e) => UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::from((
-            e,
-            subnet_id,
-            provided_principals_count,
-        )))),
+        Err(e) => UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::RegistryError(e))),
     }
 }
 

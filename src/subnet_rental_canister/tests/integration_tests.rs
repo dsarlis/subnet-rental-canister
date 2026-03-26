@@ -1,10 +1,19 @@
-use candid::{decode_one, encode_args, encode_one, utils::ArgumentEncoder, CandidType, Principal};
+use candid::{
+    decode_one, encode_args, encode_one, types::bounded_vec::BoundedVec, utils::ArgumentEncoder,
+    CandidType, Principal,
+};
 use ic_ledger_types::{
     AccountBalanceArgs, AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferResult,
     DEFAULT_FEE, DEFAULT_SUBACCOUNT, MAINNET_CYCLES_MINTING_CANISTER_ID,
     MAINNET_GOVERNANCE_CANISTER_ID, MAINNET_LEDGER_CANISTER_ID,
 };
-use pocket_ic::{PocketIc, PocketIcBuilder, Time};
+use pocket_ic::{
+    common::rest::{
+        CanisterCyclesCostSchedule, ExtendedSubnetConfigSet, IcpFeatures, IcpFeaturesConfig,
+        SubnetSpec,
+    },
+    PocketIc, PocketIcBuilder, Time,
+};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -17,9 +26,10 @@ use subnet_rental_canister::{
         CmcInitPayload, ExchangeRateCanister, FeatureFlags, NnsLedgerCanisterInitPayload,
         NnsLedgerCanisterPayload, PrincipalsAuthorizedToCreateCanistersToSubnetsResponse,
     },
-    CreateRentalAgreementPayload, EventPage, ExecuteProposalError, RentalAgreement,
+    CreateRentalAgreementPayload, EventPage, ExecuteProposalError, OperationType, RentalAgreement,
     RentalAgreementStatus, RentalConditionId, RentalConditions, RentalRequest,
-    SubnetRentalProposalPayload, TopUpSummary, E8S, TRILLION,
+    SubnetRentalProposalPayload, TopUpSummary, UpdateSubnetAdminsError, UpdateSubnetAdminsPayload,
+    UpdateSubnetAdminsResult, E8S, TRILLION,
 };
 
 const SRC_WASM: &str = "../../subnet_rental_canister.wasm.gz";
@@ -97,13 +107,7 @@ fn install_ledger(pic: &PocketIc) {
     );
 }
 
-fn setup() -> PocketIc {
-    let pic = PocketIcBuilder::new()
-        .with_nns_subnet()
-        // needed for XRC
-        .with_ii_subnet()
-        .build();
-
+fn setup_helper(pic: PocketIc) -> PocketIc {
     pic.set_time(Time::from_nanos_since_unix_epoch(
         1_620_633_600 * 1_000_000_000,
     )); // set time to make CMC fetch the first rate properly from the XRC
@@ -117,6 +121,35 @@ fn setup() -> PocketIc {
     pic.install_canister(subnet_rental_canister, src_wasm, vec![], None);
     pic.add_cycles(subnet_rental_canister, INITIAL_SRC_CYCLES_BALANCE);
     pic
+}
+
+fn setup() -> PocketIc {
+    let pic = PocketIcBuilder::new()
+        .with_nns_subnet()
+        // needed for XRC
+        .with_ii_subnet()
+        .build();
+
+    setup_helper(pic)
+}
+
+fn setup_with_rented_subnet() -> PocketIc {
+    let subnet_spec = SubnetSpec::default().with_cost_schedule(CanisterCyclesCostSchedule::Free);
+    let subnet_config = ExtendedSubnetConfigSet {
+        application: vec![subnet_spec],
+        ..Default::default()
+    };
+    let pic = PocketIcBuilder::new_with_config(subnet_config)
+        .with_nns_subnet()
+        // needed for XRC
+        .with_ii_subnet()
+        .with_icp_features(IcpFeatures {
+            registry: Some(IcpFeaturesConfig::DefaultConfig),
+            ..Default::default()
+        })
+        .build();
+
+    setup_helper(pic)
 }
 
 fn get_todays_price(pic: &PocketIc) -> Tokens {
@@ -977,6 +1010,179 @@ fn test_accept_rental_agreement_cannot_be_called_by_non_governance() {
         .contains(&format!("{:?}", ExecuteProposalError::UnauthorizedCaller)));
 }
 
+#[test]
+fn update_subnet_admins_cannot_be_called_by_non_renting_principal() {
+    let pic = setup();
+    let user_principal = USER_1;
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id: SUBNET_FOR_RENT,
+        operation_type: Some(OperationType::Add(BoundedVec::new(vec![USER_2]))),
+    };
+    let res = update::<UpdateSubnetAdminsResult>(
+        &pic,
+        SRC_ID,
+        Some(user_principal),
+        "update_subnet_admins",
+        payload,
+    );
+    assert_eq!(
+        res.unwrap(),
+        UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::CallerNotRentingSubnet(
+            candid::Reserved
+        ))),
+    );
+}
+
+#[test]
+fn list_of_subnet_admins_to_add_or_remove_cannot_be_empty() {
+    let pic = setup_with_rented_subnet();
+
+    // There should only be one application subnet that has a free
+    // cost schedule returned by `setup_with_rented_subnet()`.
+    let subnet_id = *pic.topology().get_app_subnets().first().unwrap();
+
+    let renting_principal = USER_1;
+    rent_subnet_helper(&pic, subnet_id, renting_principal);
+
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id,
+        operation_type: Some(OperationType::Add(BoundedVec::new(vec![]))),
+    };
+    let res = update::<UpdateSubnetAdminsResult>(
+        &pic,
+        SRC_ID,
+        Some(USER_1),
+        "update_subnet_admins",
+        payload,
+    );
+    assert_eq!(
+        res.unwrap(),
+        UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::PrincipalListEmpty(
+            candid::Reserved
+        )))
+    );
+
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id,
+        operation_type: Some(OperationType::Remove(BoundedVec::new(vec![]))),
+    };
+    let res = update::<UpdateSubnetAdminsResult>(
+        &pic,
+        SRC_ID,
+        Some(renting_principal),
+        "update_subnet_admins",
+        payload,
+    );
+    assert_eq!(
+        res.unwrap(),
+        UpdateSubnetAdminsResult::Err(Some(UpdateSubnetAdminsError::PrincipalListEmpty(
+            candid::Reserved
+        )))
+    );
+}
+
+#[test]
+fn can_update_subnet_admins_when_renting_subnet() {
+    let pic = setup_with_rented_subnet();
+
+    // There should only be one application subnet that has a free
+    // cost schedule returned by `setup_with_rented_subnet()`.
+    let subnet_id = *pic.topology().get_app_subnets().first().unwrap();
+
+    let renting_principal = USER_1;
+    rent_subnet_helper(&pic, subnet_id, renting_principal);
+
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id,
+        operation_type: Some(OperationType::Add(BoundedVec::new(vec![
+            renting_principal,
+            USER_2,
+        ]))),
+    };
+    let res = update::<UpdateSubnetAdminsResult>(
+        &pic,
+        SRC_ID,
+        Some(renting_principal),
+        "update_subnet_admins",
+        payload,
+    );
+    assert_eq!(res.unwrap(), UpdateSubnetAdminsResult::Ok(candid::Reserved));
+
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id,
+        operation_type: Some(OperationType::Remove(BoundedVec::new(vec![USER_2]))),
+    };
+    let res = update::<UpdateSubnetAdminsResult>(
+        &pic,
+        SRC_ID,
+        Some(renting_principal),
+        "update_subnet_admins",
+        payload,
+    );
+    assert_eq!(res.unwrap(), UpdateSubnetAdminsResult::Ok(candid::Reserved));
+}
+
+#[test]
+fn do_not_allow_concurrent_subnet_admin_updates() {
+    let pic = setup_with_rented_subnet();
+
+    // There should only be one application subnet that has a free
+    // cost schedule returned by `setup_with_rented_subnet()`.
+    let subnet_id = *pic.topology().get_app_subnets().first().unwrap();
+
+    rent_subnet_helper(&pic, subnet_id, USER_1);
+
+    // Prepare and submit two messages to concurrently update subnet admins.
+    // One of them should succeed and one should fail.
+    let user_principal = USER_1;
+    let payload = UpdateSubnetAdminsPayload {
+        subnet_id,
+        operation_type: Some(OperationType::Add(BoundedVec::new(vec![USER_2]))),
+    };
+
+    let msg_id1 = pic
+        .submit_call(
+            SRC_ID,
+            user_principal,
+            "update_subnet_admins",
+            encode_one(payload.clone()).unwrap(),
+        )
+        .unwrap();
+    let msg_id2 = pic
+        .submit_call(
+            SRC_ID,
+            user_principal,
+            "update_subnet_admins",
+            encode_one(payload).unwrap(),
+        )
+        .unwrap();
+
+    let mut results = vec![];
+
+    // Trigger concurrent execution of both update calls and block until the
+    // first one completes.
+    let res1 = pic.await_call(msg_id1).unwrap();
+    let decoded_res1 = decode_one::<UpdateSubnetAdminsResult>(&res1).unwrap();
+    results.push(decoded_res1);
+
+    // Resume execution of the second update call if it has not completed yet
+    // and block until it completes
+    let res2 = pic.await_call(msg_id2).unwrap();
+    let decoded_res2 = decode_one::<UpdateSubnetAdminsResult>(&res2).unwrap();
+    results.push(decoded_res2);
+
+    assert!(
+        results.contains(&UpdateSubnetAdminsResult::Ok(candid::Reserved)),
+        "One call should have succeeded but got {results:?}"
+    );
+    assert!(
+        results.contains(&UpdateSubnetAdminsResult::Err(Some(
+            UpdateSubnetAdminsError::ConcurrentChange(candid::Reserved)
+        ))),
+        "One call should have failed due to concurrent changes but got {results:?}"
+    );
+}
+
 // TODO
 // fn test_proposal_rejected_if_already_rented() {
 // fn test_burning() {
@@ -1081,4 +1287,53 @@ fn check_subnet_status(pic: &PocketIc) -> RentalAgreementStatus {
         SUBNET_FOR_RENT,
     )
     .unwrap()
+}
+
+fn rent_subnet_helper(pic: &PocketIc, subnet_id: Principal, renting_principal: Principal) {
+    // set an exchange rate for the current time on the XRC mock
+    set_xrc_exchange_rate_last_midnight(pic, 3_593_382_591); // 1 ICP = 3.593382591 XDR
+    let final_subnet_price = get_todays_price(pic);
+
+    // transfer the initial payment
+    let paid_to_src = final_subnet_price + Tokens::from_e8s(100 * E8S); // 100 ICP extra
+    pay_src(pic, renting_principal, paid_to_src);
+
+    // create rental request proposal
+    let now = pic.get_time().as_nanos_since_unix_epoch() / NANOS_PER_SECOND;
+    let payload = SubnetRentalProposalPayload {
+        user: renting_principal,
+        rental_condition_id: RentalConditionId::App13CH,
+        proposal_id: 136408,
+        proposal_creation_time_seconds: now,
+    };
+
+    // 1 day passes ...
+    pic.advance_time(Duration::from_secs(SECONDS_PER_DAY));
+    for _ in 0..3 {
+        pic.tick();
+    }
+
+    // Submit the request to rent a subnet and execute it.
+    update::<()>(
+        pic,
+        SRC_ID,
+        Some(MAINNET_GOVERNANCE_CANISTER_ID),
+        "execute_rental_request_proposal",
+        payload.clone(),
+    )
+    .unwrap();
+
+    let payload = CreateRentalAgreementPayload {
+        user: renting_principal,
+        subnet_id,
+        proposal_id: 137322,
+    };
+    update::<()>(
+        pic,
+        SRC_ID,
+        Some(MAINNET_GOVERNANCE_CANISTER_ID),
+        "execute_create_rental_agreement",
+        payload.clone(),
+    )
+    .unwrap();
 }

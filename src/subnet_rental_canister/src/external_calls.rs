@@ -1,5 +1,7 @@
 use crate::canister_state::{cache_rate, get_cached_rate};
-use crate::external_types::{NotifyError, NotifyTopUpArg, SetAuthorizedSubnetworkListArgs};
+use crate::external_types::{
+    NotifyError, NotifyTopUpArg, SetAuthorizedSubnetworkListArgs, UpdateSubnetAdminsPayload,
+};
 use crate::{ExecuteProposalError, MEMO_TOP_UP_CANISTER};
 use candid::Principal;
 use ic_cdk::{call::Call, println};
@@ -17,6 +19,8 @@ use std::cell::RefCell;
 thread_local! {
     static EXCHANGE_RATE_CANISTER_ID: RefCell<Principal> =
         RefCell::new(Principal::from_text("uf6dk-hyaaa-aaaaq-qaaaq-cai").expect("Invalid XRC canister ID"));
+    static REGISTRY_CANISTER_ID: RefCell<Principal> =
+        RefCell::new(Principal::from_text("rwlgt-iiaaa-aaaaa-aaaaa-cai").expect("Invalid Registry canister ID"));
 }
 
 pub fn get_exchange_rate_canister_id() -> Principal {
@@ -168,4 +172,15 @@ pub async fn check_subaccount_balance(subaccount: Subaccount) -> Tokens {
         .expect("Failed to call LedgerCanister")
         .candid()
         .expect("Failed to decode result")
+}
+
+pub async fn update_subnet_admins(payload: UpdateSubnetAdminsPayload) -> Result<(), String> {
+    Call::unbounded_wait(
+        REGISTRY_CANISTER_ID.with_borrow(|p| *p),
+        "update_subnet_admins",
+    )
+    .with_arg(payload)
+    .await
+    .map(|_| ())
+    .map_err(|err| err.to_string())
 }
